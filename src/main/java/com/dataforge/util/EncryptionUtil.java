@@ -16,8 +16,14 @@ public class EncryptionUtil {
     private static byte[] key;
     private static final String ALGORITHM = "AES";
 
-    // IMPORTANT: In a production environment, this key should NOT be hardcoded.
-    // It should be loaded securely from environment variables, a key vault, etc.
+    // ===================================================================
+    // !!! IMPORTANT SECURITY NOTICE !!!
+    // ===================================================================
+    // This is the secret key used to encrypt the passwords of the databases you create.
+    // In a production environment, this key should NOT be hardcoded.
+    // It should be loaded securely from environment variables or a key vault.
+    //
+    // !!! REPLACE THIS WITH YOUR OWN SECRET KEY !!!
     private static final String SECRET_KEY_STRING = "ThisIsASecretKeyForDataforgeAPI"; 
 
     public EncryptionUtil() {
