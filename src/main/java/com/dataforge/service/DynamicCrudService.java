@@ -1,7 +1,7 @@
 package com.dataforge.service;
 
-import com.dataforge.exception.ResourceNotFoundException; // Import ResourceNotFoundException
-import com.dataforge.exception.InvalidInputException; // Import InvalidInputException
+import com.dataforge.exception.InvalidInputException;
+import com.dataforge.exception.ResourceNotFoundException;
 import com.dataforge.model.DatabaseInstance;
 import com.dataforge.repository.DatabaseInstanceRepository;
 import com.dataforge.util.EncryptionUtil;
@@ -32,8 +32,6 @@ public class DynamicCrudService {
         String placeholders = record.keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
         String sql = String.format("INSERT INTO %s (%s) VALUES (%s)", tableName, columns, placeholders);
 
-        System.out.println("Executing SQL: " + sql);
-
         try (Connection conn = DriverManager.getConnection(url, instance.getDbUser(), decryptedPassword);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
@@ -41,11 +39,9 @@ public class DynamicCrudService {
             for (Object value : record.values()) {
                 pstmt.setObject(i++, value);
             }
-
             pstmt.executeUpdate();
-
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to create record in table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to create record in table '" + tableName + "': " + e.getMessage());
         }
     }
 
@@ -79,9 +75,7 @@ public class DynamicCrudService {
         }
 
         sqlBuilder.append(String.format(" LIMIT %d OFFSET %d", limit, (page - 1) * limit));
-
         String sql = sqlBuilder.toString();
-        System.out.println("Executing SQL: " + sql);
 
         try (Connection conn = DriverManager.getConnection(url, instance.getDbUser(), decryptedPassword);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -102,9 +96,8 @@ public class DynamicCrudService {
                     records.add(record);
                 }
             }
-
         } catch (SQLException e) {
-            throw new RuntimeException("Failed to read records from table '" + tableName + "': " + e.getMessage(), e); // Keep RuntimeException
+            throw new RuntimeException("Failed to read records from table '" + tableName + "': " + e.getMessage());
         }
         return records;
     }
@@ -117,19 +110,18 @@ public class DynamicCrudService {
         StringBuilder sqlBuilder = new StringBuilder(String.format("UPDATE %s SET ", tableName));
         List<Object> params = new ArrayList<>();
 
-        String setClause = updates.entrySet().stream()
+        String setClause = updates.keySet().stream()
                 .map(entry -> {
-                    params.add(entry.getValue());
-                    return String.format("%s = ?", entry.getKey());
+                    params.add(updates.get(entry));
+                    return String.format("%s = ?", entry);
                 })
                 .collect(Collectors.joining(", "));
         sqlBuilder.append(setClause);
 
         sqlBuilder.append(" WHERE id = ?");
-        params.add(recordId);
+        params.add(parseId(recordId)); // Use the parsed ID
 
         String sql = sqlBuilder.toString();
-        System.out.println("Executing SQL: " + sql);
 
         try (Connection conn = DriverManager.getConnection(url, instance.getDbUser(), decryptedPassword);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -137,11 +129,9 @@ public class DynamicCrudService {
             for (int i = 0; i < params.size(); i++) {
                 pstmt.setObject(i + 1, params.get(i));
             }
-
             return pstmt.executeUpdate();
-
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to update record in table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to update record in table '" + tableName + "': " + e.getMessage());
         }
     }
 
@@ -151,23 +141,34 @@ public class DynamicCrudService {
         String decryptedPassword = encryptionUtil.decrypt(instance.getDbPassword());
 
         String sql = String.format("DELETE FROM %s WHERE id = ?", tableName);
-        System.out.println("Executing SQL: " + sql);
 
         try (Connection conn = DriverManager.getConnection(url, instance.getDbUser(), decryptedPassword);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
-            pstmt.setObject(1, recordId);
-
+            pstmt.setObject(1, parseId(recordId)); // Use the parsed ID
             return pstmt.executeUpdate();
-
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to delete record from table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to delete record from table '" + tableName + "': " + e.getMessage());
         }
+    }
+
+    private Object parseId(Object originalId) {
+        if (originalId instanceof String) {
+            try {
+                // Try to parse it as a Long (which covers Integers)
+                return Long.parseLong((String) originalId);
+            } catch (NumberFormatException e) {
+                // If it fails, it's probably a genuine string ID (like a UUID), so we return it as is.
+                return originalId;
+            }
+        }
+        // If it's already a number, return it as is.
+        return originalId;
     }
 
     private DatabaseInstance findInstance(Long dbId) {
         return instanceRepository.findById(dbId)
-                .orElseThrow(() -> new ResourceNotFoundException("Database instance not found with id: " + dbId)); // Throw custom exception
+                .orElseThrow(() -> new ResourceNotFoundException("Database instance not found with id: " + dbId));
     }
 
     private String buildJdbcUrl(DatabaseInstance instance) {

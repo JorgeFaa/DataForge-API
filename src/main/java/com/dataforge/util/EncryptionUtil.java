@@ -24,7 +24,7 @@ public class EncryptionUtil {
     // It should be loaded securely from environment variables or a key vault.
     //
     // !!! REPLACE THIS WITH YOUR OWN SECRET KEY !!!
-    private static final String SECRET_KEY_STRING = "ThisIsASecretKeyForDataforgeAPI"; 
+    private static final String SECRET_KEY_STRING = "ZFYa+Np+6fPpiDTVLs+aNcoWNf3IirxkMKqITroaKPA=";
 
     public EncryptionUtil() {
         prepareSecretKey(SECRET_KEY_STRING);

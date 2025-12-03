@@ -1,17 +1,14 @@
 package com.dataforge.service;
 
-import com.dataforge.dto.ColumnDefinition;
-import com.dataforge.dto.CreateTableRequest;
-import com.dataforge.dto.ForeignKeyDefinition;
-import com.dataforge.dto.ModifyColumnRequest;
-import com.dataforge.dto.TableRelationship;
-import com.dataforge.dto.TableSchemaResponse;
-import com.dataforge.exception.ResourceNotFoundException; // Import ResourceNotFoundException
-import com.dataforge.exception.InvalidInputException; // Import InvalidInputException
+import com.dataforge.dto.*;
+import com.dataforge.exception.InvalidInputException;
+import com.dataforge.exception.ResourceNotFoundException;
 import com.dataforge.model.DatabaseInstance;
 import com.dataforge.repository.DatabaseInstanceRepository;
 import com.dataforge.util.EncryptionUtil;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.sql.*;
@@ -29,6 +26,7 @@ public class TableManagerService {
     @Autowired
     private EncryptionUtil encryptionUtil;
 
+    @CacheEvict(value = "tableSchemas", key = "#dbId + '-' + #request.tableName()")
     public void createTable(Long dbId, CreateTableRequest request) {
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
@@ -40,11 +38,12 @@ public class TableManagerService {
              Statement stmt = conn.createStatement()) {
             stmt.execute(createTableSql);
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to create table: " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to create table: " + e.getMessage());
         }
     }
 
     public List<String> listTables(Long dbId) {
+        // This could also be cached, but it's less critical than getTableSchema
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
         String decryptedPassword = encryptionUtil.decrypt(instance.getDbPassword());
@@ -58,12 +57,14 @@ public class TableManagerService {
                 }
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Failed to list tables: " + e.getMessage(), e); // Keep RuntimeException for unexpected DB errors
+            throw new RuntimeException("Failed to list tables: " + e.getMessage(), e);
         }
         return tableNames;
     }
 
+    @Cacheable(value = "tableSchemas", key = "#dbId + '-' + #tableName")
     public TableSchemaResponse getTableSchema(Long dbId, String tableName) {
+        System.out.println("--- EXECUTING getTableSchema (NOT FROM CACHE) for " + tableName + " ---");
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
         String decryptedPassword = encryptionUtil.decrypt(instance.getDbPassword());
@@ -80,7 +81,7 @@ public class TableManagerService {
             }
 
             try (ResultSet rs = metaData.getColumns(null, "public", tableName, "%")) {
-                if (!rs.isBeforeFirst()) { // Check if ResultSet is empty
+                if (!rs.isBeforeFirst()) {
                     throw new ResourceNotFoundException("Table '" + tableName + "' not found in database ID " + dbId);
                 }
                 while (rs.next()) {
@@ -102,6 +103,7 @@ public class TableManagerService {
         return new TableSchemaResponse(tableName, columns);
     }
 
+    @CacheEvict(value = "tableSchemas", key = "#dbId + '-' + #tableName")
     public void deleteTable(Long dbId, String tableName) {
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
@@ -112,26 +114,27 @@ public class TableManagerService {
              Statement stmt = conn.createStatement()) {
             stmt.execute(dropTableSql);
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to delete table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to delete table '" + tableName + "': " + e.getMessage());
         }
     }
 
+    @CacheEvict(value = "tableSchemas", key = "#dbId + '-' + #tableName")
     public void addColumn(Long dbId, String tableName, ColumnDefinition columnDefinition) {
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
         String decryptedPassword = encryptionUtil.decrypt(instance.getDbPassword());
 
         String addColumnSql = String.format("ALTER TABLE %s ADD COLUMN %s", tableName, buildColumnDefinitionSql(columnDefinition));
-        System.out.println("Executing SQL: " + addColumnSql);
-
+        
         try (Connection conn = DriverManager.getConnection(url, instance.getDbUser(), decryptedPassword);
              Statement stmt = conn.createStatement()) {
             stmt.execute(addColumnSql);
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to add column '" + columnDefinition.name() + "' to table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to add column '" + columnDefinition.name() + "' to table '" + tableName + "': " + e.getMessage());
         }
     }
 
+    @CacheEvict(value = "tableSchemas", key = "#dbId + '-' + #tableName")
     public void modifyColumn(Long dbId, String tableName, String oldColumnName, ModifyColumnRequest request) {
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
@@ -144,14 +147,12 @@ public class TableManagerService {
 
             if (request.newColumnName() != null && !request.newColumnName().isBlank() && !request.newColumnName().equals(oldColumnName)) {
                 String renameSql = String.format("ALTER TABLE %s RENAME COLUMN %s TO %s", tableName, currentColumnName, request.newColumnName());
-                System.out.println("Executing SQL: " + renameSql);
                 stmt.execute(renameSql);
                 currentColumnName = request.newColumnName();
             }
 
             if (request.newDataType() != null && !request.newDataType().isBlank()) {
                 String alterTypeSql = String.format("ALTER TABLE %s ALTER COLUMN %s TYPE %s", tableName, currentColumnName, request.newDataType());
-                System.out.println("Executing SQL: " + alterTypeSql);
                 stmt.execute(alterTypeSql);
             }
 
@@ -162,30 +163,31 @@ public class TableManagerService {
                 } else {
                     alterNullabilitySql = String.format("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL", tableName, currentColumnName);
                 }
-                System.out.println("Executing SQL: " + alterNullabilitySql);
                 stmt.execute(alterNullabilitySql);
             }
 
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to modify column '" + oldColumnName + "' in table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to modify column '" + oldColumnName + "' in table '" + tableName + "': " + e.getMessage());
         }
     }
 
+    @CacheEvict(value = "tableSchemas", key = "#dbId + '-' + #tableName")
     public void deleteColumn(Long dbId, String tableName, String columnName) {
         DatabaseInstance instance = findInstance(dbId);
         String url = buildJdbcUrl(instance);
         String decryptedPassword = encryptionUtil.decrypt(instance.getDbPassword());
 
         String dropColumnSql = String.format("ALTER TABLE %s DROP COLUMN %s", tableName, columnName);
-        System.out.println("Executing SQL: " + dropColumnSql);
 
         try (Connection conn = DriverManager.getConnection(url, instance.getDbUser(), decryptedPassword);
              Statement stmt = conn.createStatement()) {
             stmt.execute(dropColumnSql);
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to delete column '" + columnName + "' from table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to delete column '" + columnName + "' from table '" + tableName + "': " + e.getMessage());
         }
     }
+
+    // ... (el resto de los métodos no necesitan cambios por ahora)
 
     public void dropForeignKey(Long dbId, String tableName, String constraintName) {
         DatabaseInstance instance = findInstance(dbId);
@@ -199,7 +201,7 @@ public class TableManagerService {
              Statement stmt = conn.createStatement()) {
             stmt.execute(dropFkSql);
         } catch (SQLException e) {
-            throw new InvalidInputException("Failed to drop foreign key constraint '" + constraintName + "' from table '" + tableName + "': " + e.getMessage()); // Use InvalidInputException
+            throw new InvalidInputException("Failed to drop foreign key constraint '" + constraintName + "' from table '" + tableName + "': " + e.getMessage());
         }
     }
 
@@ -223,14 +225,14 @@ public class TableManagerService {
                 }
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Failed to get relationships for table '" + tableName + "': " + e.getMessage(), e); // Keep RuntimeException
+            throw new RuntimeException("Failed to get relationships for table '" + tableName + "': " + e.getMessage(), e);
         }
         return relationships;
     }
 
     private DatabaseInstance findInstance(Long dbId) {
         return instanceRepository.findById(dbId)
-                .orElseThrow(() -> new ResourceNotFoundException("Database instance not found with id: " + dbId)); // Throw custom exception
+                .orElseThrow(() -> new ResourceNotFoundException("Database instance not found with id: " + dbId));
     }
 
     private String buildJdbcUrl(DatabaseInstance instance) {
@@ -265,7 +267,6 @@ public class TableManagerService {
         sql.append(String.join(", ", definitions));
         sql.append(");");
         
-        System.out.println("Executing SQL: " + sql.toString());
         return sql.toString();
     }
 

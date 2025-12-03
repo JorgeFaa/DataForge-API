@@ -2,7 +2,7 @@ package com.dataforge.service;
 
 import com.dataforge.model.DatabaseInstance;
 import com.dataforge.repository.DatabaseInstanceRepository;
-import com.dataforge.util.EncryptionUtil; // Import the EncryptionUtil
+import com.dataforge.util.EncryptionUtil;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.exception.NotFoundException;
@@ -14,33 +14,63 @@ import com.github.dockerjava.core.DefaultDockerClientConfig;
 import com.github.dockerjava.core.DockerClientImpl;
 import com.github.dockerjava.httpclient5.ApacheDockerHttpClient;
 import com.github.dockerjava.transport.DockerHttpClient;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-
-import java.util.HashMap;
-import java.util.Map;
 
 @Service
 public class DockerService {
 
-    private final DockerClient dockerClient;
     private final DatabaseInstanceRepository repository;
-    private final EncryptionUtil encryptionUtil; // Inject EncryptionUtil
+    private final EncryptionUtil encryptionUtil;
+    
+    private DockerClient dockerClient;
+    private boolean isDockerConnected = false;
 
     @Autowired
     public DockerService(DatabaseInstanceRepository repository, EncryptionUtil encryptionUtil) {
         this.repository = repository;
-        this.encryptionUtil = encryptionUtil; // Assign it
-        
-        DefaultDockerClientConfig config = DefaultDockerClientConfig.createDefaultConfigBuilder().build();
-        DockerHttpClient httpClient = new ApacheDockerHttpClient.Builder()
-                .dockerHost(config.getDockerHost())
-                .sslConfig(config.getSSLConfig())
-                .build();
-        this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
+        this.encryptionUtil = encryptionUtil;
+    }
+
+    @PostConstruct
+    public void init() {
+        try {
+            DefaultDockerClientConfig config = DefaultDockerClientConfig.createDefaultConfigBuilder().build();
+            DockerHttpClient httpClient = new ApacheDockerHttpClient.Builder()
+                    .dockerHost(config.getDockerHost())
+                    .sslConfig(config.getSSLConfig())
+                    .build();
+            this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
+            this.dockerClient.pingCmd().exec();
+            this.isDockerConnected = true;
+            System.out.println("Successfully connected to Docker daemon.");
+        } catch (Exception e) {
+            this.isDockerConnected = false;
+            System.err.println("!!! FAILED TO CONNECT TO DOCKER DAEMON !!!");
+            System.err.println("Please ensure Docker is installed and running.");
+            System.err.println("Error: " + e.getMessage());
+        }
+    }
+
+    public boolean isDockerConnected() {
+        return this.isDockerConnected;
     }
 
     public DatabaseInstance createPostgresContainer(String dbName, String user, String password) {
+        if (!isDockerConnected) {
+            throw new IllegalStateException("Cannot create container: Not connected to Docker daemon.");
+        }
+
+        System.out.println("Ensuring postgres:17 image exists locally...");
+        try {
+            dockerClient.pullImageCmd("postgres").withTag("17").start().awaitCompletion();
+            System.out.println("postgres:17 image is ready.");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Failed while waiting for postgres:17 image to pull", e);
+        }
+
         ExposedPort exposedPort = ExposedPort.tcp(5432);
         PortBinding portBinding = new PortBinding(Ports.Binding.empty(), exposedPort);
         HostConfig hostConfig = new HostConfig().withPortBindings(portBinding);
@@ -62,14 +92,19 @@ public class DockerService {
         instance.setContainerId(containerId);
         instance.setDbName(dbName);
         instance.setDbUser(user);
-        instance.setDbPassword(encryptionUtil.encrypt(password)); // Encrypt the password before saving
-        instance.setHost("localhost");
+        instance.setDbPassword(encryptionUtil.encrypt(password));
+        // For a desktop app, the API runs on the host, so localhost is the correct address
+        // to connect to the port exposed by the Docker container on the host.
+        instance.setHost("localhost"); 
         instance.setPort(hostPort);
 
         return repository.save(instance);
     }
 
     public void removeContainer(String containerId) {
+        if (!isDockerConnected) {
+            throw new IllegalStateException("Cannot remove container: Not connected to Docker daemon.");
+        }
         try {
             dockerClient.stopContainerCmd(containerId).exec();
         } catch (NotFoundException e) {
